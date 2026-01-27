@@ -261,3 +261,88 @@ class FinancialEngine:
             perf.to_excel(w, sheet_name='Performance')
             pd.DataFrame([metrics]).to_excel(w, sheet_name='Metricas')
         return buf.getvalue()
+    # ==========================================
+    # 6. MÉTODOS ESPECIALES PARA LA API (WRAPPERS)
+    # ==========================================
+    def api_monte_carlo(self, tickers, weights, initial_capital, simulations=1000):
+        """
+        Función autónoma para la API: Descarga datos, calcula Mu/Sigma y corre la simulación.
+        Devuelve JSON puro.
+        """
+        try:
+            # 1. Obtener datos frescos (últimos 2 años para estimar volatilidad reciente)
+            prices = self.get_market_data(tickers, start_date="2022-01-01", end_date=None)
+            if prices.empty: return {"error": "No data found"}
+            
+            # 2. Calcular retornos logarítmicos
+            log_rets = np.log(prices / prices.shift(1)).dropna()
+            
+            # 3. Calcular Mu y Sigma del PORTAFOLIO
+            # Convertimos pesos a array en el orden correcto de las columnas
+            w_list = [weights.get(col, 0) for col in prices.columns]
+            w = np.array(w_list)
+            
+            # Retorno esperado diario (promedio simple) y Volatilidad diaria
+            port_ret_daily = np.sum(log_rets.mean() * w)
+            port_vol_daily = np.sqrt(np.dot(w.T, np.dot(log_rets.cov(), w)))
+            
+            # 4. Anualizar para la función run_monte_carlo (que usa inputs anualizados o diarios según tu lógica)
+            # Tu función original 'run_monte_carlo' usa drift diario internamente (drift = mu - 0.5...),
+            # pero asumamos que le pasamos los parámetros anualizados para mantener consistencia 
+            # o pasamos los diarios y ajustamos. 
+            # NOTA: Tu función 'run_monte_carlo' ya hace dt = 1/252. 
+            # Pasemos Mu y Sigma ANUALIZADOS que es lo estándar.
+            mu_annual = port_ret_daily * 252
+            sigma_annual = port_vol_daily * np.sqrt(252)
+            
+            # 5. Correr Simulación
+            days_arr, median, optimistic, pessimistic = self.run_monte_carlo(
+                capital=initial_capital, 
+                mu=mu_annual, 
+                sigma=sigma_annual, 
+                days=252, 
+                sims=simulations
+            )
+            
+            # 6. Retornar listas (JSON serializable)
+            return {
+                "days": days_arr.tolist(),
+                "median": median.tolist(),
+                "optimistic": optimistic.tolist(),
+                "pessimistic": pessimistic.tolist()
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    def api_benchmark(self, tickers, weights, start_date="2020-01-01"):
+        """
+        Función autónoma para la API: Reconstruye la historia y compara con SPY.
+        """
+        try:
+            # 1. Obtener historia completa
+            prices = self.get_market_data(tickers, start_date=start_date, end_date=None)
+            
+            # 2. Calcular curva del usuario
+            # Reconstruimos los pesos en orden
+            w_series = pd.Series(weights)
+            # Filtramos solo activos validos
+            valid_tickers = prices.columns.intersection(w_series.index)
+            
+            # Retornos ponderados
+            rets = prices[valid_tickers].pct_change().dropna()
+            port_ret = (rets * w_series[valid_tickers]).sum(axis=1)
+            
+            # 3. Usar tu función existente de benchmark
+            # (Le pasamos capital=1 para obtener retornos normalizados)
+            _, _, df_compare = self.align_and_benchmark(prices, port_ret, capital=100)
+            
+            # 4. Formatear para gráfica (índice fecha a string)
+            df_compare.index = df_compare.index.strftime('%Y-%m-%d')
+            
+            return {
+                "dates": df_compare.index.tolist(),
+                "portfolio": df_compare['Portafolio Estratégico'].tolist(),
+                "benchmark": df_compare['S&P 500 Benchmark'].tolist()
+            }
+        except Exception as e:
+            return {"error": str(e)}

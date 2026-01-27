@@ -50,6 +50,18 @@ class PortfolioResponse(BaseModel):
     status: Dict[str, Any]
     tickers_analyzed: List[str]
 
+# --- MODELOS NUEVOS PARA MONTE CARLO Y BENCHMARK ---
+class SimulationRequest(BaseModel):
+    tickers: List[str]
+    weights: Dict[str, float]
+    initial_capital: float = 10000
+    simulations: int = 500  # Límite por defecto para Render Free
+
+class BenchmarkRequest(BaseModel):
+    tickers: List[str]
+    weights: Dict[str, float]
+    start_date: str = "2020-01-01"
+
 # --- ENDPOINTS ---
 
 @app.get("/")
@@ -203,3 +215,36 @@ def export_to_excel(request: ExportRequest):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error Excel: {str(e)}")
+    
+# 5. MONTE CARLO (NUEVO)
+@app.post("/api/v1/montecarlo")
+def endpoint_montecarlo(request: SimulationRequest):
+    try:
+        # Llamamos al wrapper que creamos en financial_engine
+        results = engine.api_monte_carlo(
+            request.tickers, 
+            request.weights, 
+            request.initial_capital, 
+            simulations=request.simulations
+        )
+        if "error" in results:
+            raise HTTPException(status_code=500, detail=results["error"])
+        return results
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# 6. BENCHMARK (NUEVO)
+@app.post("/api/v1/benchmark")
+def endpoint_benchmark(request: BenchmarkRequest):
+    try:
+        # Llamamos al wrapper que creamos en financial_engine
+        results = engine.api_benchmark(
+            request.tickers, 
+            request.weights, 
+            request.start_date
+        )
+        if "error" in results:
+            raise HTTPException(status_code=500, detail=results["error"])
+        return results
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
