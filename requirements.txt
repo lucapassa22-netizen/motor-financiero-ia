@@ -11,3 +11,4 @@ streamlit
 scipy
 pydantic
 python-multipart
+PyPortfolioOpt
