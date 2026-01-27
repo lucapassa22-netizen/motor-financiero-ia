@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+pandas
+numpy
+yfinance
+google-generativeai
+xlsxwriter
+requests
+plotly
+streamlit
+scipy
+pydantic
+python-multipart
