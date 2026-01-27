@@ -20,7 +20,7 @@ st.title("🤖 Motor Financiero con IA")
 st.markdown("Optimización, Backtesting y Análisis Inteligente en un solo lugar.")
 
 # CONFIGURACIÓN DE CONEXIÓN
-API_URL = "http://127.0.0.1:8005"
+API_URL = "https://mi-motor-financiero-ia.onrender.com"
 
 # --- SIDEBAR: ESTADO Y API KEY ---
 st.sidebar.header("⚙️ Configuración")
