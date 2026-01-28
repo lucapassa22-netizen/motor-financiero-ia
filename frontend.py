@@ -25,7 +25,7 @@ st.markdown("Optimización, Proyección y Análisis Inteligente.")
 API_URL = "https://mi-motor-financiero-ia.onrender.com"
 
 # CLAVE MAESTRA INTERNA (Debe coincidir con la que pusiste en main_api.py)
-INTERNAL_KEY = "PRUEBA_GRATIS_123"
+INTERNAL_KEY = "sk_live_master_key_123"
 HEADERS = {"X-API-Key": INTERNAL_KEY}
 
 # --- SIDEBAR: ESTADO Y API KEY ---
@@ -280,4 +280,5 @@ if st.session_state['opt_data']:
                     else:
                         st.error("Error Excel")
                 except Exception as e:
+
                     st.error(f"Error: {e}")
