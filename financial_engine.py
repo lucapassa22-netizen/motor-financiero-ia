@@ -56,19 +56,14 @@ class FinancialEngine:
     # 2. MOTOR DE OPTIMIZACIÓN (CEREBRO)
     # ==========================================
     def optimize_portfolio(self, prices, method='markowitz', objective='max_sharpe', 
-                          risk_free_rate=0.02, bounds=(0.0, 1.0), target_return=None,
-                          market_benchmark='SPY'):
+                           risk_free_rate=0.02, bounds=(0.0, 1.0), target_return=None,
+                           market_benchmark='SPY'):
         """
         Retorna: weights (dict), performance (tuple), status (dict)
         """
         # Filtramos SPY si el usuario NO lo pidió explícitamente en la lista de tickers del DF
-        # (Se asume que 'prices' trae solo lo que el usuario seleccionó + SPY si faltaba)
         opt_cols = [c for c in prices.columns if c != market_benchmark]
-        # Si el usuario SI eligió SPY en su lista, lo dejamos
-        # (Lógica simplificada: Optimizamos sobre todo lo que no sea el benchmark forzado)
         if market_benchmark in prices.columns and len(prices.columns) > 1:
-             # Verificación simple: Si SPY está en prices pero no fue solicitado por usuario, idealmente 
-             # se debería filtrar antes. Aquí asumimos que el Dashboard pasa prices limpios o filtramos:
              pass 
 
         opt_prices = prices[opt_cols] if len(opt_cols) > 0 else prices
@@ -161,8 +156,7 @@ class FinancialEngine:
         # Retorno Bruto
         port_daily_ret = (asset_rets * weights_clean).sum(axis=1)
         
-        # Ajuste de Costos (Realismo vs Vectorización)
-        # Si hay fees, los aplicamos como "expense ratio" diario para mantener la curva suave
+        # Ajuste de Costos
         if fee_perc > 0:
             daily_fee = fee_perc / 252
             port_daily_ret = port_daily_ret - daily_fee
@@ -229,6 +223,7 @@ class FinancialEngine:
         }
 
     def get_rolling(self, ret, w=126):
+        """Esta es la función que faltaba antes."""
         return ret.rolling(w).std()*np.sqrt(252), ret.rolling(w).mean()*252
 
     # ==========================================
@@ -261,6 +256,7 @@ class FinancialEngine:
             perf.to_excel(w, sheet_name='Performance')
             pd.DataFrame([metrics]).to_excel(w, sheet_name='Metricas')
         return buf.getvalue()
+
     # ==========================================
     # 6. MÉTODOS ESPECIALES PARA LA API (WRAPPERS)
     # ==========================================
@@ -278,20 +274,13 @@ class FinancialEngine:
             log_rets = np.log(prices / prices.shift(1)).dropna()
             
             # 3. Calcular Mu y Sigma del PORTAFOLIO
-            # Convertimos pesos a array en el orden correcto de las columnas
             w_list = [weights.get(col, 0) for col in prices.columns]
             w = np.array(w_list)
             
-            # Retorno esperado diario (promedio simple) y Volatilidad diaria
             port_ret_daily = np.sum(log_rets.mean() * w)
             port_vol_daily = np.sqrt(np.dot(w.T, np.dot(log_rets.cov(), w)))
             
-            # 4. Anualizar para la función run_monte_carlo (que usa inputs anualizados o diarios según tu lógica)
-            # Tu función original 'run_monte_carlo' usa drift diario internamente (drift = mu - 0.5...),
-            # pero asumamos que le pasamos los parámetros anualizados para mantener consistencia 
-            # o pasamos los diarios y ajustamos. 
-            # NOTA: Tu función 'run_monte_carlo' ya hace dt = 1/252. 
-            # Pasemos Mu y Sigma ANUALIZADOS que es lo estándar.
+            # 4. Anualizar
             mu_annual = port_ret_daily * 252
             sigma_annual = port_vol_daily * np.sqrt(252)
             
@@ -317,25 +306,27 @@ class FinancialEngine:
     def api_benchmark(self, tickers, weights, start_date="2020-01-01"):
         """
         Función autónoma para la API: Reconstruye la historia y compara con SPY.
+        CORREGIDO: Devuelve valores normalizados a base 1.0 para evitar errores de escala.
         """
         try:
             # 1. Obtener historia completa
             prices = self.get_market_data(tickers, start_date=start_date, end_date=None)
             
             # 2. Calcular curva del usuario
-            # Reconstruimos los pesos en orden
             w_series = pd.Series(weights)
-            # Filtramos solo activos validos
             valid_tickers = prices.columns.intersection(w_series.index)
             
-            # Retornos ponderados
             rets = prices[valid_tickers].pct_change().dropna()
             port_ret = (rets * w_series[valid_tickers]).sum(axis=1)
             
-            # 3. Usar tu función existente de benchmark
-            # (Le pasamos capital=1 para obtener retornos normalizados)
-            _, _, df_compare = self.align_and_benchmark(prices, port_ret, capital=100)
+            # 3. FIX: Usamos Capital = 1.0 para obtener retorno puro normalizado
+            _, _, df_compare = self.align_and_benchmark(prices, port_ret, capital=1.0)
             
+            # --- DOBLE SEGURIDAD: Normalizamos a fuerza bruta ---
+            # Dividimos todo por el primer valor para que SIEMPRE empiece en 1.0
+            # Esto evita el error del 25.000%
+            df_compare = df_compare / df_compare.iloc[0]
+
             # 4. Formatear para gráfica (índice fecha a string)
             df_compare.index = df_compare.index.strftime('%Y-%m-%d')
             
