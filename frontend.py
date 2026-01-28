@@ -21,7 +21,7 @@ st.markdown("Optimización, Proyección y Análisis Inteligente.")
 
 # CONFIGURACIÓN DE CONEXIÓN
 # ⚠️ IMPORTANTE: Asegúrate que esta sea tu URL real de Render
-API_URL = "https://tu-app-en-render.onrender.com"
+API_URL = "https://mi-motor-financiero-ia.onrender.com"
 
 # CLAVE MAESTRA INTERNA
 INTERNAL_KEY = "sk_live_master_key_123"
@@ -286,3 +286,4 @@ if st.session_state['opt_data']:
                         st.error("Error Excel")
                 except Exception as e:
                     st.error(f"Error: {e}")
+
