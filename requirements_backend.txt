@@ -12,4 +12,5 @@ scipy
 pydantic
 python-multipart
 PyPortfolioOpt
+supabase
 scikit-learn
