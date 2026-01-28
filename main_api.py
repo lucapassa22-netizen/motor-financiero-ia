@@ -69,6 +69,27 @@ async def verify_api_key(x_api_key: str = Header(..., alias="X-API-Key")):
         if isinstance(e, HTTPException):
             raise e
         raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
+
+def get_clean_data(tickers, start_date=None, period=None):
+    """Descarga datos de forma segura evitando errores de columnas"""
+    try:
+        if period:
+            df = yf.download(tickers, period=period, progress=False)
+        else:
+            df = yf.download(tickers, start=start_date, progress=False)
+        
+        # Corrección para el error 'Adj Close'
+        if 'Adj Close' in df:
+            return df['Adj Close']
+        elif 'Close' in df:
+            print("⚠️ 'Adj Close' no encontrado, usando 'Close'")
+            return df['Close']
+        else:
+            # Caso raro: yfinance devuelve los datos sin multi-index si es 1 solo ticker
+            return df
+    except Exception as e:
+        print(f"Error descargando datos: {e}")
+        return pd.DataFrame()
 # --- 3. MODELOS DE DATOS ---
 class OptimizationRequest(BaseModel):
     tickers: List[str]
@@ -138,8 +159,11 @@ def home():
 @app.post("/api/v1/optimize")
 def optimize(request: OptimizationRequest, user=Depends(verify_api_key)):
     try:
-        data = yf.download(request.tickers, period="2y")['Adj Close']
-        if data.empty: raise HTTPException(404, "No data found")
+        data = get_clean_data(request.tickers, period="2y")
+        if data.empty or data.shape[1] == 0: 
+            raise HTTPException(404, "No se pudieron descargar datos de Yahoo Finance.")
+        # Limpieza extra para evitar NaN
+        data = data.dropna(axis=1, how='all').dropna()
         
         mu = expected_returns.mean_historical_return(data)
         S = risk_models.sample_cov(data)
@@ -278,3 +302,4 @@ def export_excel(request: ExportRequest, user=Depends(verify_api_key)):
     output.seek(0)
 
     return StreamingResponse(output, headers={"Content-Disposition": "attachment; filename=reporte.xlsx"}, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
