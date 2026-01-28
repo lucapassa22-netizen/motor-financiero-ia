@@ -24,15 +24,21 @@ st.markdown("Optimización, Proyección y Análisis Inteligente.")
 # Si vas a subir a Render, usa tu URL de Render:
 API_URL = "https://mi-motor-financiero-ia.onrender.com"
 
+# CLAVE MAESTRA INTERNA (Debe coincidir con la que pusiste en main_api.py)
+INTERNAL_KEY = "PRUEBA_GRATIS_123"
+HEADERS = {"X-API-Key": INTERNAL_KEY}
+
 # --- SIDEBAR: ESTADO Y API KEY ---
 st.sidebar.header("⚙️ Configuración")
 
 # Verificación de API
 if st.sidebar.button("Revisar Conexión API"):
     try:
-        r = requests.get(f"{API_URL}/")
+        r = requests.get(f"{API_URL}/", headers=HEADERS)
         if r.status_code == 200:
             st.sidebar.success("Backend Online 🟢")
+        elif r.status_code == 403:
+            st.sidebar.error("⛔ Error de Llave (403)")
         else:
             st.sidebar.error("Backend con Error 🔴")
     except:
@@ -72,13 +78,13 @@ if st.button("🚀 GENERAR PORTAFOLIO ÓPTIMO", type="primary"):
         
         with st.spinner("Calculando la frontera eficiente..."):
             try:
-                resp = requests.post(f"{API_URL}/api/v1/optimize", json=payload)
+                resp = requests.post(f"{API_URL}/api/v1/optimize", json=payload, headers=HEADERS)
                 if resp.status_code == 200:
                     st.session_state['opt_data'] = resp.json()
                     st.session_state['user_inputs'] = payload
                     st.success("¡Portafolio Optimizado!")
                 else:
-                    st.error(f"Error: {resp.text}")
+                    st.error(f"Error del Servidor ({resp.status_code}): {resp.text}")
             except Exception as e:
                 st.error(f"Error de conexión: {e}")
 

@@ -12,3 +12,4 @@ scipy
 pydantic
 python-multipart
 PyPortfolioOpt
+scikit-learn

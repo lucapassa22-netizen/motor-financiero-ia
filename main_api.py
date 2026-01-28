@@ -1,20 +1,46 @@
-# main_api.py (VERSIÓN 1.5.0 - COMPLETA CON EXCEL)
-from fastapi import FastAPI, HTTPException
+# main_api.py (VERSIÓN 1.6.0 - SECURED B2B)
+from fastapi import FastAPI, HTTPException, Security, Depends
+from fastapi.security import APIKeyHeader
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import pandas as pd
 import numpy as np
-import io # Necesario para manejar el archivo en memoria
+import io
+import os
 
-# Importamos TU cerebro financiero existente
+# Importamos TU cerebro financiero
 from financial_engine import FinancialEngine
 
+# --- CONFIGURACIÓN DE SEGURIDAD (EL PORTERO) ---
+API_KEY_NAME = "X-API-Key"
+api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
+
+# LISTA DE CLIENTES AUTORIZADOS (Esto en el futuro iría a una base de datos)
+VALID_API_KEYS = [
+    "PRUEBA_GRATIS_123",    # Para tus tests
+    "CLIENTE_BANCO_A",      # Cliente real 1
+    "CLIENTE_FONDO_B"       # Cliente real 2
+]
+
+# Función que verifica la llave
+async def get_api_key(api_key_header: str = Security(api_key_header)):
+    if api_key_header in VALID_API_KEYS:
+        return api_key_header
+    else:
+        raise HTTPException(
+            status_code=403, 
+            detail="⛔ Acceso Denegado: API Key inválida o faltante."
+        )
+
+# --- INICIALIZACIÓN DE LA APP ---
+# dependencies=[Depends(get_api_key)] protege TODAS las rutas automáticamente
 app = FastAPI(
-    title="Financial Engine API",
-    description="API Completa: Optimización, Backtest, IA y Reportes.",
-    version="1.5.0"
+    title="Financial Engine API (B2B)",
+    description="Motor financiero profesional securizado para integración bancaria.",
+    version="1.6.0",
+    dependencies=[Depends(get_api_key)] 
 )
 
 engine = FinancialEngine()
@@ -37,12 +63,22 @@ class AIAnalysisRequest(BaseModel):
     weights: Dict[str, float]
     metrics: Dict[str, float]
     risk_profile: str
-    api_key: str
+    api_key: str # Esta es la key de Gemini (Google), distinta a la de tu API
 
-# NUEVO MODELO PARA EXCEL
 class ExportRequest(BaseModel):
     weights: Dict[str, float]
     metrics: Dict[str, float]
+
+class SimulationRequest(BaseModel):
+    tickers: List[str]
+    weights: Dict[str, float]
+    initial_capital: float = 10000
+    simulations: int = 500
+
+class BenchmarkRequest(BaseModel):
+    tickers: List[str]
+    weights: Dict[str, float]
+    start_date: str = "2020-01-01"
 
 class PortfolioResponse(BaseModel):
     weights: Dict[str, float]
@@ -50,25 +86,13 @@ class PortfolioResponse(BaseModel):
     status: Dict[str, Any]
     tickers_analyzed: List[str]
 
-# --- MODELOS NUEVOS PARA MONTE CARLO Y BENCHMARK ---
-class SimulationRequest(BaseModel):
-    tickers: List[str]
-    weights: Dict[str, float]
-    initial_capital: float = 10000
-    simulations: int = 500  # Límite por defecto para Render Free
-
-class BenchmarkRequest(BaseModel):
-    tickers: List[str]
-    weights: Dict[str, float]
-    start_date: str = "2020-01-01"
-
 # --- ENDPOINTS ---
 
+# Nota: Incluso el Home está protegido ahora.
 @app.get("/")
 def home():
-    return {"status": "online", "message": "All systems operational 🚀"}
+    return {"status": "online", "message": "Financial Engine B2B Ready 🔒"}
 
-# 1. OPTIMIZAR
 @app.post("/api/v1/optimize", response_model=PortfolioResponse)
 def optimize_portfolio(request: OptimizeRequest):
     try:
@@ -113,7 +137,6 @@ def optimize_portfolio(request: OptimizeRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# 2. BACKTEST
 @app.post("/api/v1/backtest")
 def backtest_portfolio(request: BacktestRequest):
     try:
@@ -166,7 +189,6 @@ def backtest_portfolio(request: BacktestRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# 3. CONSULTOR IA
 @app.post("/api/v1/analyze")
 def analyze_with_ai(request: AIAnalysisRequest):
     try:
@@ -187,45 +209,29 @@ def analyze_with_ai(request: AIAnalysisRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error IA: {str(e)}")
 
-# 4. EXPORTAR EXCEL (NUEVO)
 @app.post("/api/v1/export")
 def export_to_excel(request: ExportRequest):
-    """
-    Genera un archivo Excel descargable con el portafolio.
-    """
     try:
-        # Convertimos los diccionarios JSON a Pandas Series/DataFrames
-        # Esto es necesario porque engine.export_excel espera objetos de Pandas
         w_series = pd.Series(request.weights, name="Pesos")
-        
-        # Creamos un DataFrame para performance (visualización limpia)
         metrics_df = pd.DataFrame.from_dict(request.metrics, orient='index', columns=['Valor'])
-        
-        # Llamamos a la función de tu motor
-        # Nota: Pasamos metrics_df dos veces porque tu motor pide (weights, metrics, perf)
-        # y metrics ya contiene la data de perf, así que reutilizamos para que no falle.
         excel_binary = engine.export_excel(w_series, request.metrics, metrics_df)
         
-        # Devolvemos el archivo como un "stream" para que el navegador lo descargue
         return StreamingResponse(
             io.BytesIO(excel_binary),
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers={"Content-Disposition": "attachment; filename=reporte_inversion.xlsx"}
         )
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error Excel: {str(e)}")
     
-# 5. MONTE CARLO (NUEVO)
 @app.post("/api/v1/montecarlo")
 def endpoint_montecarlo(request: SimulationRequest):
     try:
-        # Llamamos al wrapper que creamos en financial_engine
         results = engine.api_monte_carlo(
             request.tickers, 
             request.weights, 
             request.initial_capital, 
-            simulations=request.simulations
+            request.simulations
         )
         if "error" in results:
             raise HTTPException(status_code=500, detail=results["error"])
@@ -233,11 +239,9 @@ def endpoint_montecarlo(request: SimulationRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# 6. BENCHMARK (NUEVO)
 @app.post("/api/v1/benchmark")
 def endpoint_benchmark(request: BenchmarkRequest):
     try:
-        # Llamamos al wrapper que creamos en financial_engine
         results = engine.api_benchmark(
             request.tickers, 
             request.weights, 
