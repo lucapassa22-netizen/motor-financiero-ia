@@ -306,7 +306,7 @@ def benchmark(request: BenchmarkRequest, user=Depends(verify_api_key)):
 def analyze_ai(request: AIAnalysisRequest, user=Depends(verify_api_key)):
     try:
         genai.configure(api_key=request.api_key)
-        model = genai.GenerativeModel('gemini-pro')
+        model = genai.GenerativeModel('gemini-1.5-flash')
         prompt = f"Analiza este portafolio con perfil {request.risk_profile}: {request.weights}. Métricas: {request.metrics}. Dame 3 recomendaciones breves."
         response = model.generate_content(prompt)
         return {"ai_analysis": response.text}
@@ -333,3 +333,4 @@ def export_excel(request: ExportRequest, user=Depends(verify_api_key)):
         headers={"Content-Disposition": "attachment; filename=reporte.xlsx"}, 
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
+
