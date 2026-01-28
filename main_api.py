@@ -28,36 +28,47 @@ else:
 app = FastAPI(title="Financial Engine SaaS", version="2.0")
 
 # --- 2. EL PORTERO (SEGURIDAD CON BASE DE DATOS) ---
+# Reemplaza la función verify_api_key anterior por esta:
+
 async def verify_api_key(x_api_key: str = Header(..., alias="X-API-Key")):
-    """
-    Verifica que la llave exista en Supabase y el usuario esté activo.
-    """
+    print(f"\n--- 🕵️ DEBUG START ---")
+    print(f"1. Llave recibida del Frontend: '{x_api_key}'")
+    
     if not supabase:
-        # Si no hay DB conectada, dejamos pasar (Modo Debug) o fallamos
-        # Para seguridad real, deberíamos fallar.
-        print("⚠️ Saltando verificación Supabase (Credenciales no encontradas)")
-        return {"plan_type": "debug"}
+        print("❌ Error: Cliente Supabase es None. Revisa credenciales.")
+        raise HTTPException(status_code=500, detail="Error configuración DB")
 
     try:
-        # Consultamos la tabla 'user_api_keys'
+        # Intentamos buscar la llave
+        print(f"2. Consultando Supabase tabla 'user_api_keys'...")
+        
+        # Hacemos la consulta
         response = supabase.table("user_api_keys").select("*").eq("api_key", x_api_key).execute()
         
-        # Si la lista está vacía, la llave no existe
+        print(f"3. Respuesta cruda de Supabase: {response}")
+        print(f"4. Datos (data): {response.data}")
+        
+        # Verificar si se encontró algo
         if not response.data:
-            raise HTTPException(status_code=403, detail="⛔ API Key no válida.")
+            print("⛔ Resultado: Lista vacía. La llave no coincide con ninguna fila.")
+            raise HTTPException(status_code=403, detail="API Key no encontrada en DB")
         
         user_data = response.data[0]
+        print(f"✅ Usuario encontrado: {user_data.get('user_id')}")
         
         if not user_data.get("is_active", True):
-            raise HTTPException(status_code=403, detail="⛔ Tu plan está inactivo. Contacta soporte.")
+            print("⛔ Usuario inactivo.")
+            raise HTTPException(status_code=403, detail="Tu plan está inactivo.")
             
-        return user_data # Retornamos info del usuario (ej: su plan)
+        print("--- DEBUG END ---\n")
+        return user_data 
 
     except Exception as e:
-        if isinstance(e, HTTPException): raise e
-        print(f"Error DB: {e}")
-        raise HTTPException(status_code=500, detail="Error interno de validación.")
-
+        print(f"🔥 EXCEPCIÓN CRÍTICA: {str(e)}")
+        # Si ya es HTTPException, la relanzamos
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
 # --- 3. MODELOS DE DATOS ---
 class OptimizationRequest(BaseModel):
     tickers: List[str]
@@ -265,4 +276,5 @@ def export_excel(request: ExportRequest, user=Depends(verify_api_key)):
         row += 1
     workbook.close()
     output.seek(0)
+
     return StreamingResponse(output, headers={"Content-Disposition": "attachment; filename=reporte.xlsx"}, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
