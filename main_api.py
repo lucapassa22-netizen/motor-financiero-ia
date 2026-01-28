@@ -1,4 +1,4 @@
-# main_api.py - VERSIÓN 2.0 (SAAS EDITION CON SUPABASE)
+# main_api.py - VERSIÓN 2.1 (SAAS EDITION FIX)
 from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -12,6 +12,7 @@ import os
 import io
 import xlsxwriter
 from supabase import create_client, Client
+from datetime import datetime # MOVIDO AQUÍ PARA EVITAR ERRORES
 
 # --- 1. CONFIGURACIÓN DE CREDENCIALES (RENDER) ---
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -19,77 +20,84 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
 # Conexión a Supabase
+supabase: Client = None
 if not SUPABASE_URL or not SUPABASE_KEY:
-    print("⚠️ ADVERTENCIA: Faltan credenciales de Supabase. La seguridad fallará.")
-    supabase: Client = None
+    print("⚠️ ADVERTENCIA: Faltan credenciales de Supabase. La validación de usuarios podría fallar.")
 else:
-    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    try:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        print("✅ Conexión a Supabase inicializada.")
+    except Exception as e:
+        print(f"❌ Error conectando a Supabase: {e}")
 
-app = FastAPI(title="Financial Engine SaaS", version="2.0")
+app = FastAPI(title="Financial Engine SaaS", version="2.1")
 
 # --- 2. EL PORTERO (SEGURIDAD CON BASE DE DATOS) ---
-# Reemplaza la función verify_api_key anterior por esta:
-
 async def verify_api_key(x_api_key: str = Header(..., alias="X-API-Key")):
-    print(f"\n--- 🕵️ DEBUG START ---")
-    print(f"1. Llave recibida del Frontend: '{x_api_key}'")
-    
+    # MODO DEBUG: Si no hay Supabase configurado, dejamos pasar una llave maestra para pruebas
     if not supabase:
-        print("❌ Error: Cliente Supabase es None. Revisa credenciales.")
-        raise HTTPException(status_code=500, detail="Error configuración DB")
+        if x_api_key == "sk_live_master_key_123":
+            return {"user_id": "test_user", "plan_type": "admin", "is_active": True}
+        raise HTTPException(status_code=500, detail="Error: Backend sin conexión a Base de Datos.")
 
     try:
-        # Intentamos buscar la llave
-        print(f"2. Consultando Supabase tabla 'user_api_keys'...")
-        
-        # Hacemos la consulta
+        # Consultando Supabase
         response = supabase.table("user_api_keys").select("*").eq("api_key", x_api_key).execute()
         
-        print(f"3. Respuesta cruda de Supabase: {response}")
-        print(f"4. Datos (data): {response.data}")
-        
-        # Verificar si se encontró algo
         if not response.data:
-            print("⛔ Resultado: Lista vacía. La llave no coincide con ninguna fila.")
-            raise HTTPException(status_code=403, detail="API Key no encontrada en DB")
+            raise HTTPException(status_code=403, detail="API Key no válida o no encontrada.")
         
         user_data = response.data[0]
-        print(f"✅ Usuario encontrado: {user_data.get('user_id')}")
         
         if not user_data.get("is_active", True):
-            print("⛔ Usuario inactivo.")
             raise HTTPException(status_code=403, detail="Tu plan está inactivo.")
             
-        print("--- DEBUG END ---\n")
         return user_data 
 
     except Exception as e:
-        print(f"🔥 EXCEPCIÓN CRÍTICA: {str(e)}")
         # Si ya es HTTPException, la relanzamos
         if isinstance(e, HTTPException):
             raise e
-        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error interno auth: {str(e)}")
 
 def get_clean_data(tickers, start_date=None, period=None):
-    """Descarga datos de forma segura evitando errores de columnas"""
+    """Descarga datos de forma robusta."""
     try:
-        if period:
-            df = yf.download(tickers, period=period, progress=False)
-        else:
-            df = yf.download(tickers, start=start_date, progress=False)
+        # Aseguramos que sea una lista única
+        tickers = list(set(tickers))
         
-        # Corrección para el error 'Adj Close'
-        if 'Adj Close' in df:
-            return df['Adj Close']
-        elif 'Close' in df:
-            print("⚠️ 'Adj Close' no encontrado, usando 'Close'")
-            return df['Close']
+        if period:
+            df = yf.download(tickers, period=period, progress=False, auto_adjust=False)
         else:
-            # Caso raro: yfinance devuelve los datos sin multi-index si es 1 solo ticker
-            return df
+            df = yf.download(tickers, start=start_date, progress=False, auto_adjust=False)
+        
+        if df.empty:
+            return pd.DataFrame()
+
+        # MANEJO DE ESTRUCTURA YFINANCE (El punto crítico)
+        # yfinance devuelve MultiIndex si hay >1 ticker, y simple si hay 1.
+        
+        # 1. Intentamos obtener 'Adj Close', si no 'Close'
+        if 'Adj Close' in df:
+            prices = df['Adj Close']
+        elif 'Close' in df:
+            prices = df['Close']
+        else:
+            # Si df ya es directamente los precios (caso raro)
+            prices = df
+
+        # 2. Si descargamos 1 solo ticker, prices es una Series. Lo convertimos a DataFrame.
+        if isinstance(prices, pd.Series):
+            prices = prices.to_frame(name=tickers[0])
+            
+        # 3. Limpieza final
+        prices = prices.dropna(how='all').fillna(method='ffill').dropna()
+        return prices
+
     except Exception as e:
         print(f"Error descargando datos: {e}")
         return pd.DataFrame()
+
 # --- 3. MODELOS DE DATOS ---
 class OptimizationRequest(BaseModel):
     tickers: List[str]
@@ -128,11 +136,11 @@ class CreateKeyRequest(BaseModel):
     user_id: str
     plan_type: str = "free"
 
-# --- 4. ENDPOINTS DE GESTIÓN (NUEVO) ---
+# --- 4. ENDPOINTS ---
 
 @app.post("/api/v1/create_key")
 def create_user_key(req: CreateKeyRequest):
-    """Genera una nueva llave y la guarda en Supabase (Solo uso interno)"""
+    """Genera una nueva llave (Solo uso interno/Admin)"""
     import secrets
     new_key = f"sk_live_{secrets.token_hex(16)}"
     
@@ -150,20 +158,20 @@ def create_user_key(req: CreateKeyRequest):
             raise HTTPException(status_code=400, detail=str(e))
     return {"error": "No DB connection"}
 
-# --- 5. ENDPOINTS FINANCIEROS (PROTEGIDOS) ---
-
 @app.get("/")
 def home():
-    return {"message": "Financial Engine v2.0 (SaaS Mode) - Connected to Supabase 🟢"}
+    status = "Connected to Supabase 🟢" if supabase else "No DB 🔴"
+    return {"message": f"Financial Engine SaaS v2.1 - {status}"}
 
 @app.post("/api/v1/optimize")
 def optimize(request: OptimizationRequest, user=Depends(verify_api_key)):
     try:
         data = get_clean_data(request.tickers, period="2y")
-        if data.empty or data.shape[1] == 0: 
-            raise HTTPException(404, "No se pudieron descargar datos de Yahoo Finance.")
-        # Limpieza extra para evitar NaN
-        data = data.dropna(axis=1, how='all').dropna()
+        if data.empty: 
+            raise HTTPException(404, "No se pudieron descargar datos.")
+        
+        # Filtramos tickers que realmente bajaron
+        valid_tickers = data.columns.tolist()
         
         mu = expected_returns.mean_historical_return(data)
         S = risk_models.sample_cov(data)
@@ -174,7 +182,6 @@ def optimize(request: OptimizationRequest, user=Depends(verify_api_key)):
         elif request.risk_profile == "Arriesgado":
             weights = ef.max_sharpe()
         else:
-            # Moderado: Max Sharpe con restricción de volatilidad (simplificado aquí como max_sharpe standard)
             weights = ef.max_sharpe() 
             
         clean_weights = ef.clean_weights()
@@ -186,79 +193,99 @@ def optimize(request: OptimizationRequest, user=Depends(verify_api_key)):
             "plan": user.get("plan_type")
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Opt error: {str(e)}")
 
 @app.post("/api/v1/backtest")
 def backtest(request: BacktestRequest, user=Depends(verify_api_key)):
     try:
-        end = request.end_date if request.end_date else datetime.today().strftime('%Y-%m-%d')
-        from datetime import datetime
-        df = yf.download(request.tickers, start=request.start_date)['Adj Close']
+        # Usamos get_clean_data para consistencia
+        df = get_clean_data(request.tickers, start_date=request.start_date)
         
-        # Normalizar y calcular
+        if df.empty: raise HTTPException(404, "Sin datos para backtest")
+
+        # Normalizar a base 1.0
         norm_df = df / df.iloc[0]
         port_val = pd.Series(0, index=norm_df.index)
+        
         for t, w in request.weights.items():
             if t in norm_df.columns:
                 port_val += norm_df[t] * w
         
         equity_curve = port_val * request.initial_capital
         
-        # Métricas
         total_ret = (equity_curve.iloc[-1] / request.initial_capital) - 1
-        drawdown = (equity_curve - equity_curve.cummax()) / equity_curve.cummax()
+        cummax = equity_curve.cummax()
+        drawdown = (equity_curve - cummax) / cummax
         max_dd = drawdown.min()
         
-        history = [{"date": str(d.date()), "value": v} for d, v in equity_curve.items()]
+        # Reset index para que JSON serialice fechas
+        hist_df = equity_curve.reset_index()
+        hist_df.columns = ['date', 'value']
+        # Convertimos fecha a string
+        history = hist_df.apply(lambda x: {"date": x['date'].strftime('%Y-%m-%d'), "value": x['value']}, axis=1).tolist()
         
         return {
             "final_balance": round(equity_curve.iloc[-1], 2),
             "total_return_pct": round(total_ret * 100, 2),
             "max_drawdown_pct": round(max_dd * 100, 2),
-            "history": history[::5] # Retornar 1 de cada 5 datos para no saturar
+            "history": history[::5] # Downsample
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Backtest error: {str(e)}")
 
 @app.post("/api/v1/montecarlo")
 def montecarlo(request: SimulationRequest, user=Depends(verify_api_key)):
-    # Simulación Montecarlo simplificada dentro de la API
     try:
-        data = yf.download(request.tickers, period="1y")['Adj Close']
+        # Usamos get_clean_data para consistencia
+        data = get_clean_data(request.tickers, period="1y")
         returns = data.pct_change().dropna()
         
         mean_daily_ret = 0
         var_daily_ret = 0
-        for t, w in request.weights.items():
-             if t in returns.columns:
-                 mean_daily_ret += returns[t].mean() * w
-                 var_daily_ret += (returns[t].std()**2) * (w**2)
         
-        vol_daily = np.sqrt(var_daily_ret)
+        # Calculamos mu y sigma del portafolio
+        w_list = np.array([request.weights.get(t, 0) for t in data.columns])
+        
+        # Return portfolio diario
+        port_rets = returns.dot(w_list)
+        
+        mean = port_rets.mean()
+        std = port_rets.std()
+        
         days = 252
-        
         sim_data = pd.DataFrame()
-        for i in range(request.simulations):
-            # Proyección geométrica browniana simple
-            daily_noise = np.random.normal(mean_daily_ret, vol_daily, days)
-            price_series = [request.initial_capital]
-            for r in daily_noise:
-                price_series.append(price_series[-1] * (1 + r))
-            sim_data[f"sim_{i}"] = price_series
+        
+        # Vectorizado para velocidad (mucho más rápido que bucle for)
+        # Z es una matriz (days, simulations)
+        Z = np.random.normal(mean, std, (days, request.simulations))
+        daily_returns_sim = 1 + Z
+        
+        price_paths = np.vstack([np.ones((1, request.simulations)) * request.initial_capital, np.zeros((days, request.simulations))])
+        
+        # Acumulamos retornos
+        for t in range(1, days + 1):
+            price_paths[t] = price_paths[t-1] * daily_returns_sim[t-1]
             
+        final_paths = pd.DataFrame(price_paths)
+        
         return {
-            "median": sim_data.median(axis=1).tolist(),
-            "optimistic": sim_data.quantile(0.95, axis=1).tolist(),
-            "pessimistic": sim_data.quantile(0.05, axis=1).tolist()
+            "median": final_paths.median(axis=1).tolist(),
+            "optimistic": final_paths.quantile(0.95, axis=1).tolist(),
+            "pessimistic": final_paths.quantile(0.05, axis=1).tolist()
         }
     except Exception as e:
-         raise HTTPException(status_code=500, detail=str(e))
+         raise HTTPException(status_code=500, detail=f"Montecarlo error: {str(e)}")
 
 @app.post("/api/v1/benchmark")
 def benchmark(request: BenchmarkRequest, user=Depends(verify_api_key)):
     try:
-        tickers_all = request.tickers + ["SPY"]
-        df = yf.download(tickers_all, start=request.start_date)['Adj Close']
+        tickers_all = list(set(request.tickers + ["SPY"]))
+        df = get_clean_data(tickers_all, start_date=request.start_date)
+        
+        # Filtro de seguridad
+        if "SPY" not in df.columns:
+            raise HTTPException(500, "No se pudo descargar SPY para benchmark")
+
         df = df.dropna()
         norm = df / df.iloc[0]
         
@@ -268,7 +295,7 @@ def benchmark(request: BenchmarkRequest, user=Depends(verify_api_key)):
                 port_series += norm[t] * w
                 
         return {
-            "dates": [str(d.date()) for d in port_series.index],
+            "dates": [d.strftime('%Y-%m-%d') for d in port_series.index],
             "portfolio": port_series.tolist(),
             "benchmark": norm["SPY"].tolist()
         }
@@ -280,7 +307,7 @@ def analyze_ai(request: AIAnalysisRequest, user=Depends(verify_api_key)):
     try:
         genai.configure(api_key=request.api_key)
         model = genai.GenerativeModel('gemini-pro')
-        prompt = f"Analiza este portafolio con perfil {request.risk_profile}: {request.weights}. Métricas: {request.metrics}. Dame 3 recomendaciones."
+        prompt = f"Analiza este portafolio con perfil {request.risk_profile}: {request.weights}. Métricas: {request.metrics}. Dame 3 recomendaciones breves."
         response = model.generate_content(prompt)
         return {"ai_analysis": response.text}
     except Exception as e:
@@ -301,5 +328,8 @@ def export_excel(request: ExportRequest, user=Depends(verify_api_key)):
     workbook.close()
     output.seek(0)
 
-    return StreamingResponse(output, headers={"Content-Disposition": "attachment; filename=reporte.xlsx"}, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
+    return StreamingResponse(
+        output, 
+        headers={"Content-Disposition": "attachment; filename=reporte.xlsx"}, 
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
