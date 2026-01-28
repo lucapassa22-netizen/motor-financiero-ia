@@ -306,12 +306,43 @@ def benchmark(request: BenchmarkRequest, user=Depends(verify_api_key)):
 def analyze_ai(request: AIAnalysisRequest, user=Depends(verify_api_key)):
     try:
         genai.configure(api_key=request.api_key)
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        prompt = f"Analiza este portafolio con perfil {request.risk_profile}: {request.weights}. Métricas: {request.metrics}. Dame 3 recomendaciones breves."
-        response = model.generate_content(prompt)
-        return {"ai_analysis": response.text}
+        
+        # Prompt estándar
+        prompt = f"""
+        Actúa como un experto financiero. Analiza brevemente:
+        - Perfil: {request.risk_profile}
+        - Pesos: {request.weights}
+        - Métricas: {request.metrics}
+        Dame 3 puntos clave (pros/contras) y una conclusión.
+        """
+
+        try:
+            # INTENTO 1: Modelo moderno (Rápido y barato)
+            model = genai.GenerativeModel('gemini-1.5-flash')
+            response = model.generate_content(prompt)
+            return {"ai_analysis": response.text}
+            
+        except Exception as e_flash:
+            print(f"⚠️ Falló gemini-1.5-flash: {e_flash}")
+            
+            # INTENTO 2: Fallback al modelo clásico
+            try:
+                model = genai.GenerativeModel('gemini-pro')
+                response = model.generate_content(prompt)
+                return {"ai_analysis": response.text}
+            except Exception as e_pro:
+                # SI TODO FALLA: Listar qué modelos ve el servidor
+                try:
+                    available = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+                    error_msg = f"Error de Modelos. Disponibles en el servidor: {available}"
+                except:
+                    error_msg = f"Error crítico IA: {str(e_pro)}"
+                
+                print(error_msg)
+                return {"ai_analysis": error_msg}
+
     except Exception as e:
-        return {"ai_analysis": "Error IA: " + str(e)}
+        return {"ai_analysis": f"Error configuración IA: {str(e)}"}
 
 @app.post("/api/v1/export")
 def export_excel(request: ExportRequest, user=Depends(verify_api_key)):
@@ -333,4 +364,5 @@ def export_excel(request: ExportRequest, user=Depends(verify_api_key)):
         headers={"Content-Disposition": "attachment; filename=reporte.xlsx"}, 
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
+
 
