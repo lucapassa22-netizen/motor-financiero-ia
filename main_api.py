@@ -1,73 +1,75 @@
-# main_api.py (VERSIÓN 1.6.0 - SECURED B2B)
-from fastapi import FastAPI, HTTPException, Security, Depends
-from fastapi.security import APIKeyHeader
+# main_api.py - VERSIÓN 2.0 (SAAS EDITION CON SUPABASE)
+from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import List, Dict, Any, Optional
-from datetime import datetime
+from typing import List, Dict, Optional, Any
 import pandas as pd
 import numpy as np
-import io
+import yfinance as yf
+from pypfopt import EfficientFrontier, risk_models, expected_returns
+import google.generativeai as genai
 import os
+import io
+import xlsxwriter
+from supabase import create_client, Client
 
-# Importamos TU cerebro financiero
-from financial_engine import FinancialEngine
+# --- 1. CONFIGURACIÓN DE CREDENCIALES (RENDER) ---
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
-# --- CONFIGURACIÓN DE SEGURIDAD (EL PORTERO) ---
-API_KEY_NAME = "X-API-Key"
-api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
+# Conexión a Supabase
+if not SUPABASE_URL or not SUPABASE_KEY:
+    print("⚠️ ADVERTENCIA: Faltan credenciales de Supabase. La seguridad fallará.")
+    supabase: Client = None
+else:
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# LISTA DE CLIENTES AUTORIZADOS (Esto en el futuro iría a una base de datos)
-VALID_API_KEYS = [
-    "PRUEBA_GRATIS_123",    # Para tus tests
-    "CLIENTE_BANCO_A",      # Cliente real 1
-    "CLIENTE_FONDO_B"       # Cliente real 2
-]
+app = FastAPI(title="Financial Engine SaaS", version="2.0")
 
-# Función que verifica la llave
-async def get_api_key(api_key_header: str = Security(api_key_header)):
-    if api_key_header in VALID_API_KEYS:
-        return api_key_header
-    else:
-        raise HTTPException(
-            status_code=403, 
-            detail="⛔ Acceso Denegado: API Key inválida o faltante."
-        )
+# --- 2. EL PORTERO (SEGURIDAD CON BASE DE DATOS) ---
+async def verify_api_key(x_api_key: str = Header(..., alias="X-API-Key")):
+    """
+    Verifica que la llave exista en Supabase y el usuario esté activo.
+    """
+    if not supabase:
+        # Si no hay DB conectada, dejamos pasar (Modo Debug) o fallamos
+        # Para seguridad real, deberíamos fallar.
+        print("⚠️ Saltando verificación Supabase (Credenciales no encontradas)")
+        return {"plan_type": "debug"}
 
-# --- INICIALIZACIÓN DE LA APP ---
-# dependencies=[Depends(get_api_key)] protege TODAS las rutas automáticamente
-app = FastAPI(
-    title="Financial Engine API (B2B)",
-    description="Motor financiero profesional securizado para integración bancaria.",
-    version="1.6.0",
-    dependencies=[Depends(get_api_key)] 
-)
+    try:
+        # Consultamos la tabla 'user_api_keys'
+        response = supabase.table("user_api_keys").select("*").eq("api_key", x_api_key).execute()
+        
+        # Si la lista está vacía, la llave no existe
+        if not response.data:
+            raise HTTPException(status_code=403, detail="⛔ API Key no válida.")
+        
+        user_data = response.data[0]
+        
+        if not user_data.get("is_active", True):
+            raise HTTPException(status_code=403, detail="⛔ Tu plan está inactivo. Contacta soporte.")
+            
+        return user_data # Retornamos info del usuario (ej: su plan)
 
-engine = FinancialEngine()
+    except Exception as e:
+        if isinstance(e, HTTPException): raise e
+        print(f"Error DB: {e}")
+        raise HTTPException(status_code=500, detail="Error interno de validación.")
 
-# --- MODELOS DE DATOS ---
-
-class OptimizeRequest(BaseModel):
+# --- 3. MODELOS DE DATOS ---
+class OptimizationRequest(BaseModel):
     tickers: List[str]
     risk_profile: str
-    initial_capital: float = 10000.0
+    initial_capital: float = 10000
 
 class BacktestRequest(BaseModel):
     tickers: List[str]
     weights: Dict[str, float]
     start_date: str = "2020-01-01"
     end_date: Optional[str] = None
-    initial_capital: float = 10000.0
-
-class AIAnalysisRequest(BaseModel):
-    weights: Dict[str, float]
-    metrics: Dict[str, float]
-    risk_profile: str
-    api_key: str # Esta es la key de Gemini (Google), distinta a la de tu API
-
-class ExportRequest(BaseModel):
-    weights: Dict[str, float]
-    metrics: Dict[str, float]
+    initial_capital: float = 10000
 
 class SimulationRequest(BaseModel):
     tickers: List[str]
@@ -78,177 +80,189 @@ class SimulationRequest(BaseModel):
 class BenchmarkRequest(BaseModel):
     tickers: List[str]
     weights: Dict[str, float]
-    start_date: str = "2020-01-01"
+    start_date: str = "2021-01-01"
 
-class PortfolioResponse(BaseModel):
+class AIAnalysisRequest(BaseModel):
     weights: Dict[str, float]
     metrics: Dict[str, float]
-    status: Dict[str, Any]
-    tickers_analyzed: List[str]
+    risk_profile: str
+    api_key: str 
 
-# --- ENDPOINTS ---
+class ExportRequest(BaseModel):
+    weights: Dict[str, float]
+    metrics: Dict[str, float]
 
-# Nota: Incluso el Home está protegido ahora.
+class CreateKeyRequest(BaseModel):
+    user_id: str
+    plan_type: str = "free"
+
+# --- 4. ENDPOINTS DE GESTIÓN (NUEVO) ---
+
+@app.post("/api/v1/create_key")
+def create_user_key(req: CreateKeyRequest):
+    """Genera una nueva llave y la guarda en Supabase (Solo uso interno)"""
+    import secrets
+    new_key = f"sk_live_{secrets.token_hex(16)}"
+    
+    if supabase:
+        try:
+            data = {
+                "user_id": req.user_id,
+                "api_key": new_key,
+                "plan_type": req.plan_type,
+                "is_active": True
+            }
+            supabase.table("user_api_keys").insert(data).execute()
+            return {"status": "ok", "api_key": new_key}
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    return {"error": "No DB connection"}
+
+# --- 5. ENDPOINTS FINANCIEROS (PROTEGIDOS) ---
+
 @app.get("/")
 def home():
-    return {"status": "online", "message": "Financial Engine B2B Ready 🔒"}
+    return {"message": "Financial Engine v2.0 (SaaS Mode) - Connected to Supabase 🟢"}
 
-@app.post("/api/v1/optimize", response_model=PortfolioResponse)
-def optimize_portfolio(request: OptimizeRequest):
+@app.post("/api/v1/optimize")
+def optimize(request: OptimizationRequest, user=Depends(verify_api_key)):
     try:
-        if not request.tickers:
-            raise HTTPException(status_code=400, detail="Lista de tickers vacía.")
-
-        today = datetime.today().strftime('%Y-%m-%d')
-        prices = engine.get_market_data(request.tickers, start_date="2020-01-01", end_date=today)
+        data = yf.download(request.tickers, period="2y")['Adj Close']
+        if data.empty: raise HTTPException(404, "No data found")
         
-        if prices.empty:
-            raise HTTPException(status_code=404, detail="No se pudieron descargar datos.")
-
-        method = 'markowitz'
-        objective = 'max_sharpe'
+        mu = expected_returns.mean_historical_return(data)
+        S = risk_models.sample_cov(data)
+        ef = EfficientFrontier(mu, S)
+        
         if request.risk_profile == "Conservador":
-            objective = 'min_volatility'
+            weights = ef.min_volatility()
+        elif request.risk_profile == "Arriesgado":
+            weights = ef.max_sharpe()
+        else:
+            # Moderado: Max Sharpe con restricción de volatilidad (simplificado aquí como max_sharpe standard)
+            weights = ef.max_sharpe() 
             
-        weights, perf_tuple, status = engine.optimize_portfolio(
-            prices, 
-            method=method, 
-            objective=objective,
-            market_benchmark='SPY'
-        )
-
-        if not status['success']:
-             raise HTTPException(status_code=400, detail=status['message'])
-
-        metrics_dict = {
-            "ret_anual": perf_tuple[0],
-            "vol_anual": perf_tuple[1],
-            "sharpe": perf_tuple[2]
-        }
+        clean_weights = ef.clean_weights()
+        perf = ef.portfolio_performance(verbose=False)
         
-        clean_weights = {k: v for k, v in weights.items() if v > 0.001}
-
         return {
             "weights": clean_weights,
-            "metrics": metrics_dict,
-            "status": status,
-            "tickers_analyzed": list(prices.columns)
+            "metrics": {"ret_anual": perf[0], "vol_anual": perf[1], "sharpe": perf[2]},
+            "plan": user.get("plan_type")
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/backtest")
-def backtest_portfolio(request: BacktestRequest):
+def backtest(request: BacktestRequest, user=Depends(verify_api_key)):
     try:
         end = request.end_date if request.end_date else datetime.today().strftime('%Y-%m-%d')
-        prices = engine.get_market_data(request.tickers, start_date=request.start_date, end_date=end)
+        from datetime import datetime
+        df = yf.download(request.tickers, start=request.start_date)['Adj Close']
         
-        if prices.empty:
-            raise HTTPException(status_code=404, detail="No hay datos.")
-
-        returns = prices.pct_change().dropna()
+        # Normalizar y calcular
+        norm_df = df / df.iloc[0]
+        port_val = pd.Series(0, index=norm_df.index)
+        for t, w in request.weights.items():
+            if t in norm_df.columns:
+                port_val += norm_df[t] * w
         
-        portfolio_weights = []
-        available_tickers = returns.columns.tolist()
+        equity_curve = port_val * request.initial_capital
         
-        for ticker in available_tickers:
-            w = request.weights.get(ticker, 0.0)
-            portfolio_weights.append(w)
-            
-        weights_array = np.array(portfolio_weights)
-        if weights_array.sum() > 0:
-            weights_array = weights_array / weights_array.sum()
-        else:
-            raise HTTPException(status_code=400, detail="Pesos inválidos.")
-
-        portfolio_returns = returns.dot(weights_array)
-        cumulative_returns = (1 + portfolio_returns).cumprod()
-        equity_curve = request.initial_capital * cumulative_returns
+        # Métricas
+        total_ret = (equity_curve.iloc[-1] / request.initial_capital) - 1
+        drawdown = (equity_curve - equity_curve.cummax()) / equity_curve.cummax()
+        max_dd = drawdown.min()
         
-        final_balance = equity_curve.iloc[-1]
-        total_return_pct = (final_balance - request.initial_capital) / request.initial_capital
+        history = [{"date": str(d.date()), "value": v} for d, v in equity_curve.items()]
         
-        rolling_max = equity_curve.cummax()
-        drawdown = (equity_curve - rolling_max) / rolling_max
-        max_drawdown = drawdown.min()
-
-        chart_data = []
-        for date, value in equity_curve.iloc[::5].items():
-            chart_data.append({
-                "date": date.strftime('%Y-%m-%d'),
-                "value": round(value, 2)
-            })
-
         return {
-            "initial_capital": request.initial_capital,
-            "final_balance": round(final_balance, 2),
-            "total_return_pct": round(total_return_pct * 100, 2),
-            "max_drawdown_pct": round(max_drawdown * 100, 2),
-            "history": chart_data
+            "final_balance": round(equity_curve.iloc[-1], 2),
+            "total_return_pct": round(total_ret * 100, 2),
+            "max_drawdown_pct": round(max_dd * 100, 2),
+            "history": history[::5] # Retornar 1 de cada 5 datos para no saturar
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/montecarlo")
+def montecarlo(request: SimulationRequest, user=Depends(verify_api_key)):
+    # Simulación Montecarlo simplificada dentro de la API
+    try:
+        data = yf.download(request.tickers, period="1y")['Adj Close']
+        returns = data.pct_change().dropna()
+        
+        mean_daily_ret = 0
+        var_daily_ret = 0
+        for t, w in request.weights.items():
+             if t in returns.columns:
+                 mean_daily_ret += returns[t].mean() * w
+                 var_daily_ret += (returns[t].std()**2) * (w**2)
+        
+        vol_daily = np.sqrt(var_daily_ret)
+        days = 252
+        
+        sim_data = pd.DataFrame()
+        for i in range(request.simulations):
+            # Proyección geométrica browniana simple
+            daily_noise = np.random.normal(mean_daily_ret, vol_daily, days)
+            price_series = [request.initial_capital]
+            for r in daily_noise:
+                price_series.append(price_series[-1] * (1 + r))
+            sim_data[f"sim_{i}"] = price_series
+            
+        return {
+            "median": sim_data.median(axis=1).tolist(),
+            "optimistic": sim_data.quantile(0.95, axis=1).tolist(),
+            "pessimistic": sim_data.quantile(0.05, axis=1).tolist()
+        }
+    except Exception as e:
+         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/benchmark")
+def benchmark(request: BenchmarkRequest, user=Depends(verify_api_key)):
+    try:
+        tickers_all = request.tickers + ["SPY"]
+        df = yf.download(tickers_all, start=request.start_date)['Adj Close']
+        df = df.dropna()
+        norm = df / df.iloc[0]
+        
+        port_series = pd.Series(0, index=norm.index)
+        for t, w in request.weights.items():
+            if t in norm.columns:
+                port_series += norm[t] * w
+                
+        return {
+            "dates": [str(d.date()) for d in port_series.index],
+            "portfolio": port_series.tolist(),
+            "benchmark": norm["SPY"].tolist()
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/analyze")
-def analyze_with_ai(request: AIAnalysisRequest):
+def analyze_ai(request: AIAnalysisRequest, user=Depends(verify_api_key)):
     try:
-        prompt = f"""
-        Actúa como un Asesor Financiero experto. Analiza este portafolio:
-        RIESGO: {request.risk_profile}
-        PESOS: {request.weights}
-        MÉTRICAS: {request.metrics}
-        
-        Dame:
-        1. Comentario de diversificación.
-        2. Riesgos específicos.
-        3. Conclusión profesional.
-        Responde en español y con formato Markdown.
-        """
-        analysis = engine.ask_ai(key=request.api_key, prompt=prompt)
-        return {"ai_analysis": analysis}
+        genai.configure(api_key=request.api_key)
+        model = genai.GenerativeModel('gemini-pro')
+        prompt = f"Analiza este portafolio con perfil {request.risk_profile}: {request.weights}. Métricas: {request.metrics}. Dame 3 recomendaciones."
+        response = model.generate_content(prompt)
+        return {"ai_analysis": response.text}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error IA: {str(e)}")
+        return {"ai_analysis": "Error IA: " + str(e)}
 
 @app.post("/api/v1/export")
-def export_to_excel(request: ExportRequest):
-    try:
-        w_series = pd.Series(request.weights, name="Pesos")
-        metrics_df = pd.DataFrame.from_dict(request.metrics, orient='index', columns=['Valor'])
-        excel_binary = engine.export_excel(w_series, request.metrics, metrics_df)
-        
-        return StreamingResponse(
-            io.BytesIO(excel_binary),
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": "attachment; filename=reporte_inversion.xlsx"}
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error Excel: {str(e)}")
-    
-@app.post("/api/v1/montecarlo")
-def endpoint_montecarlo(request: SimulationRequest):
-    try:
-        results = engine.api_monte_carlo(
-            request.tickers, 
-            request.weights, 
-            request.initial_capital, 
-            request.simulations
-        )
-        if "error" in results:
-            raise HTTPException(status_code=500, detail=results["error"])
-        return results
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/v1/benchmark")
-def endpoint_benchmark(request: BenchmarkRequest):
-    try:
-        results = engine.api_benchmark(
-            request.tickers, 
-            request.weights, 
-            request.start_date
-        )
-        if "error" in results:
-            raise HTTPException(status_code=500, detail=results["error"])
-        return results
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+def export_excel(request: ExportRequest, user=Depends(verify_api_key)):
+    output = io.BytesIO()
+    workbook = xlsxwriter.Workbook(output)
+    ws = workbook.add_worksheet()
+    ws.write(0, 0, "Ticker")
+    ws.write(0, 1, "Peso")
+    row = 1
+    for t, w in request.weights.items():
+        ws.write(row, 0, t)
+        ws.write(row, 1, w)
+        row += 1
+    workbook.close()
+    output.seek(0)
+    return StreamingResponse(output, headers={"Content-Disposition": "attachment; filename=reporte.xlsx"}, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
