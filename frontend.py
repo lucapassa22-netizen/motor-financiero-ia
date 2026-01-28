@@ -1,4 +1,4 @@
-# frontend.py - VERSIÓN 2.0 (CON MONTE CARLO Y BENCHMARK)
+# frontend.py - VERSIÓN 2.0 (TU CÓDIGO ORIGINAL + FIX HEADERS)
 import streamlit as st
 import requests
 import pandas as pd
@@ -20,13 +20,12 @@ st.title("🤖 Motor Financiero con IA")
 st.markdown("Optimización, Proyección y Análisis Inteligente.")
 
 # CONFIGURACIÓN DE CONEXIÓN
-# NOTA: Si estás probando en tu PC, usa "http://127.0.0.1:8000"
-# Si vas a subir a Render, usa tu URL de Render:
-API_URL = "https://mi-motor-financiero-ia.onrender.com"
+# ⚠️ IMPORTANTE: Asegúrate que esta sea tu URL real de Render
+API_URL = "https://tu-app-en-render.onrender.com"
 
-# CLAVE MAESTRA INTERNA (Debe coincidir con la que pusiste en main_api.py)
+# CLAVE MAESTRA INTERNA
 INTERNAL_KEY = "sk_live_master_key_123"
-HEADERS = {"X-API-Key": INTERNAL_KEY}
+HEADERS = {"X-API-Key": INTERNAL_KEY, "Content-Type": "application/json"}
 
 # --- SIDEBAR: ESTADO Y API KEY ---
 st.sidebar.header("⚙️ Configuración")
@@ -78,6 +77,7 @@ if st.button("🚀 GENERAR PORTAFOLIO ÓPTIMO", type="primary"):
         
         with st.spinner("Calculando la frontera eficiente..."):
             try:
+                # AQUÍ YA ESTABA BIEN, PERO ASEGURAMOS HEADERS
                 resp = requests.post(f"{API_URL}/api/v1/optimize", json=payload, headers=HEADERS)
                 if resp.status_code == 200:
                     st.session_state['opt_data'] = resp.json()
@@ -134,7 +134,8 @@ if st.session_state['opt_data']:
             }
             with st.spinner("Descargando datos del mercado..."):
                 try:
-                    r = requests.post(f"{API_URL}/api/v1/benchmark", json=bm_payload)
+                    # CORRECCIÓN: AGREGADO headers=HEADERS
+                    r = requests.post(f"{API_URL}/api/v1/benchmark", json=bm_payload, headers=HEADERS)
                     if r.status_code == 200:
                         bm_data = r.json()
                         if "error" in bm_data:
@@ -184,7 +185,8 @@ if st.session_state['opt_data']:
             
             with st.spinner("Simulando futuros posibles..."):
                 try:
-                    r = requests.post(f"{API_URL}/api/v1/montecarlo", json=mc_payload)
+                    # CORRECCIÓN: AGREGADO headers=HEADERS
+                    r = requests.post(f"{API_URL}/api/v1/montecarlo", json=mc_payload, headers=HEADERS)
                     if r.status_code == 200:
                         mc_data = r.json()
                         if "error" in mc_data:
@@ -220,7 +222,8 @@ if st.session_state['opt_data']:
             }
             with st.spinner("Calculando..."):
                 try:
-                    bt_resp = requests.post(f"{API_URL}/api/v1/backtest", json=bt_payload)
+                    # CORRECCIÓN: AGREGADO headers=HEADERS
+                    bt_resp = requests.post(f"{API_URL}/api/v1/backtest", json=bt_payload, headers=HEADERS)
                     if bt_resp.status_code == 200:
                         bt_data = bt_resp.json()
                         b1, b2, b3 = st.columns(3)
@@ -252,7 +255,8 @@ if st.session_state['opt_data']:
                 }
                 with st.spinner("Analizando..."):
                     try:
-                        ai_resp = requests.post(f"{API_URL}/api/v1/analyze", json=ai_payload)
+                        # CORRECCIÓN: AGREGADO headers=HEADERS
+                        ai_resp = requests.post(f"{API_URL}/api/v1/analyze", json=ai_payload, headers=HEADERS)
                         if ai_resp.status_code == 200:
                             st.success("Análisis completado:")
                             st.markdown(ai_resp.json().get("ai_analysis", "Sin respuesta"))
@@ -268,17 +272,17 @@ if st.session_state['opt_data']:
         if st.button("Generar Excel"):
             with st.spinner("Generando..."):
                 try:
-                    xls_resp = requests.post(f"{API_URL}/api/v1/export", json=export_payload)
+                    # CORRECCIÓN: AGREGADO headers=HEADERS
+                    xls_resp = requests.post(f"{API_URL}/api/v1/export", json=export_payload, headers=HEADERS)
                     if xls_resp.status_code == 200:
                         st.download_button(
                             label="📥 Descargar Reporte (.xlsx)",
                             data=xls_resp.content,
-                            file_name="reporte_inversion_pro.xlsx",
+                            file_name="portafolio_optimo.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                         )
                         st.success("¡Listo!")
                     else:
                         st.error("Error Excel")
                 except Exception as e:
-
                     st.error(f"Error: {e}")
